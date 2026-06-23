@@ -1,4 +1,6 @@
+import os
 import traceback
+from dotenv import load_dotenv
 from sqlalchemy import create_engine, inspect
 from langchain_community.utilities import SQLDatabase
 from langchain_postgres.vectorstores import PGVector
@@ -11,10 +13,18 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, Tool
 from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
 
+# Load configuration from environment variables
+load_dotenv()
+
 class IntelligentTradeAgent:
     def __init__(self):
         print("--- Initializing Intelligent Trade Agent ---")
-        self.connection_string = "postgresql+psycopg2://postgres.bwwlcwmvdoidajlmaufh:helloworldishant@aws-0-ap-south-1.pooler.supabase.com:5432/postgres"
+        self.connection_string = os.getenv("DATABASE_URL")
+        if not self.connection_string:
+            raise ValueError(
+                "DATABASE_URL environment variable is missing. "
+                "Please configure it in a .env file at the root of the project."
+            )
         self.ftp_collection_name = "VectorDB"
         self.import_policy_collection_name = "import_policy_chapter_context_collection_for_hscodes"
         self.export_policy_collection_name = "export_policy_chapter_context_collection"
