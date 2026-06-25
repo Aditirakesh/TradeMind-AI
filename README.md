@@ -31,6 +31,16 @@ graph TD
 
 ---
 
+## 🛠️ Technology Stack
+
+- **AI Orchestration**: LangGraph & LangChain (ReAct Agent Framework)
+- **Large Language Model**: Google Gemini (`gemini-flash-lite-latest`)
+- **Database & Vector Store**: Supabase PostgreSQL with `pgvector` (`langchain-postgres`)
+- **Re-ranking Engine**: `cross-encoder/ms-marco-MiniLM-L-6-v2` (running locally via `sentence-transformers`)
+- **Web Interface**: Streamlit
+
+---
+
 ## 📂 Directory Structure
 
 The project files have been structured and categorized logically to match your local repository configuration:
