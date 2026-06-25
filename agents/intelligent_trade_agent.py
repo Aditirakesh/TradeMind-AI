@@ -1,44 +1,65 @@
-import os
+"""
+TradeMind AI — Intelligent Trade Agent
+Author: Aditi
+The main AI agent that combines SQL queries, RAG retrieval, and re-ranking
+to answer questions about Indian trade policies, HS codes, and FTP schemes.
+"""
+
 import traceback
-from dotenv import load_dotenv
 from sqlalchemy import create_engine, inspect
 from langchain_community.utilities import SQLDatabase
 from langchain_postgres.vectorstores import PGVector
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from sentence_transformers.cross_encoder import CrossEncoder
 from langchain_community.agent_toolkits import SQLDatabaseToolkit
-# New: Import StructuredTool to handle tools with multiple arguments
-from langchain.tools import StructuredTool
+from langchain_core.tools import StructuredTool
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
 
-# Load configuration from environment variables
-load_dotenv()
+# Import centralized config
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
+
+# Suppress Hugging Face Hub warnings
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+import logging
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+
+
+# Override print globally in this module to safely handle Windows Unicode console outputs
+def print(*args, **kwargs):
+    import builtins
+    try:
+        builtins.print(*args, **kwargs)
+    except Exception:
+        try:
+            cleaned = [str(arg).encode('ascii', errors='replace').decode('ascii') for arg in args]
+            builtins.print(*cleaned, **kwargs)
+        except Exception:
+            pass
+
 
 class IntelligentTradeAgent:
+
     def __init__(self):
         print("--- Initializing Intelligent Trade Agent ---")
-        self.connection_string = os.getenv("DATABASE_URL")
-        if not self.connection_string:
-            raise ValueError(
-                "DATABASE_URL environment variable is missing. "
-                "Please configure it in a .env file at the root of the project."
-            )
-        self.ftp_collection_name = "VectorDB"
-        self.import_policy_collection_name = "import_policy_chapter_context_collection_for_hscodes"
-        self.export_policy_collection_name = "export_policy_chapter_context_collection"
+        self.connection_string = config.DB_CONNECTION_STRING
+        self.ftp_collection_name = config.FTP_COLLECTION_NAME
+        self.import_policy_collection_name = config.IMPORT_POLICY_COLLECTION_NAME
+        self.export_policy_collection_name = config.EXPORT_POLICY_COLLECTION_NAME
 
         self._initialize_models()
         self.engine = self._create_db_engine()
         self.sql_tools = self._setup_dynamic_sql_toolkit(self.engine)
 
-        # We now pass the underlying vectorstore object to the tool creator
+        # Set up vector retrievers for each policy domain
         self.ftp_retriever = self._setup_vector_retriever("FTP Policy", self.ftp_collection_name)
         self.import_policy_retriever = self._setup_vector_retriever("Import Policy Chapters", self.import_policy_collection_name)
         self.export_policy_retriever = self._setup_vector_retriever("Export Policy Chapters", self.export_policy_collection_name)
 
-        # The RAG tools are now more advanced, capable of filtering
+        # Create advanced RAG tools with metadata filtering support
         self.ftp_rag_tool = self._create_rag_tool(
             name="retrieve_foreign_trade_policy_context",
             description="Use for questions about general Foreign Trade Policy (FTP) rules, schemes (like EPCG), definitions, and procedures. Can optionally filter by 'chapter_no'.",
@@ -63,9 +84,9 @@ class IntelligentTradeAgent:
 
     def _initialize_models(self):
         print("  -> Loading models...")
-        self.llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
-        self.embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-        self.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+        self.llm = ChatGoogleGenerativeAI(model=config.LLM_MODEL, temperature=0)
+        self.embeddings = GoogleGenerativeAIEmbeddings(model=config.EMBEDDING_MODEL, output_dimensionality=768)
+        self.cross_encoder = CrossEncoder(config.CROSS_ENCODER_MODEL)
         print("    -> Models loaded.")
 
     def _create_db_engine(self):
@@ -74,7 +95,6 @@ class IntelligentTradeAgent:
 
     def _setup_vector_retriever(self, name: str, collection_name: str):
         print(f"  -> Setting up retriever for '{name}' (collection: {collection_name})")
-        # Note: We are creating the base vector_store object here, which we will use for filtering
         vector_store = PGVector(
             embeddings=self.embeddings,
             collection_name=collection_name,
@@ -96,12 +116,9 @@ class IntelligentTradeAgent:
         print(f"    -> SQL toolkit created with {len(all_sql_tools)} tools.")
         return all_sql_tools
 
-    # MODIFIED: This method now creates a tool that can handle metadata filtering.
     def _create_rag_tool(self, name: str, description: str, retriever):
         print(f"  -> Creating ADVANCED RAG tool: {name}")
 
-        # The actual function the tool will execute.
-        # It now accepts an optional 'chapter_no' for filtering.
         def _rag_logic_with_filter(query: str, chapter_no: int = None) -> str:
             """
             Retrieve and re-rank policy texts. If a chapter_no is provided,
@@ -110,15 +127,10 @@ class IntelligentTradeAgent:
             print(f"---EXECUTING RAG TOOL '{name}' with query: '{query}' | Chapter Filter: {chapter_no}---")
 
             search_kwargs = {"k": 10}
-            # If a chapter_no is provided, add a metadata filter to the search.
             if chapter_no:
-                # This filter format is common for vector stores. It tells the DB to only
-                # look at documents where the 'chapter_no' key in the metadata JSON
-                # matches the provided value.
                 search_kwargs["filter"] = {"chapter_no": chapter_no}
                 print(f"  -> Applied metadata filter for chapter_no = {chapter_no}")
 
-            # Create a new, temporary retriever with the potentially filtered search_kwargs
             filtered_retriever = retriever.vectorstore.as_retriever(
                 search_kwargs=search_kwargs
             )
@@ -144,7 +156,6 @@ class IntelligentTradeAgent:
                 )
             return "\n\n".join(context_parts)
 
-        # We use StructuredTool to make the agent aware of the 'chapter_no' argument.
         return StructuredTool.from_function(
             func=_rag_logic_with_filter,
             name=name,
@@ -156,16 +167,12 @@ class IntelligentTradeAgent:
         self.graph = create_react_agent(self.llm, self.tools, checkpointer=self.checkpointer)
         print("    -> Graph compiled.")
 
-    # MODIFIED: The prompt now teaches the agent to use the new filtering capability.
-# In your intelligent_trade_agent.py file, replace the get_system_prompt() method with this one.
-
     def get_system_prompt(self):
         """
-        This is the definitive "Metadata-Aware & Case-Insensitive" prompt. It teaches the
-        agent to use metadata filters for RAG and case-insensitive functions for SQL,
-        making it highly precise and robust.
+        Metadata-Aware & Case-Insensitive prompt that teaches the agent to use
+        metadata filters for RAG and case-insensitive functions for SQL.
         """
-        return """You are a specialized problem-solving assistant for Indian international trade, if user ask never reveal your true identity always say that you are LeAssistant.
+        return """You are a specialized problem-solving assistant for Indian international trade, if user ask never reveal your true identity always say that you are TradeMind AI Assistant.
 
 **YOUR CORE MISSION (THE WHY):**
 
@@ -188,7 +195,7 @@ Your primary mission is to provide a complete, actionable answer by combining sp
         *   **If IMPORTING:** Query `hs_codes_rodtep_import_policies_merged`.
         *   **If EXPORTING:** Query `hs_codes_rodtep_export_policies`.
     *   **Crucial Search Strategy:** The database is case-sensitive. To ensure you find the product, you **MUST** use the `LOWER()` function on both the column and the search term.
-        *   *Example for an import search:* `sql_db_query(query="SELECT "Tariff Lines / HS Code", "Description of Goods (As per CTH )", chapter_no FROM hs_codes_rodtep_import_policies_merged WHERE LOWER("Description of Goods (As per CTH )") ILIKE LOWER('%peas%')")`
+        *   *Example for an import search:* `sql_db_query(query="SELECT \"Tariff Lines / HS Code\", \"Description of Goods (As per CTH )\", chapter_no FROM hs_codes_rodtep_import_policies_merged WHERE LOWER(\"Description of Goods (As per CTH )\") ILIKE LOWER('%peas%')")`
     *   **If this SQL search fails, use the RAG tool *without* a filter as a fallback to find the `chapter_no` semantically.**
 
 *   **PART 2: RETRIEVE Policy Context using the Metadata Filter**
@@ -210,7 +217,7 @@ Your primary mission is to provide a complete, actionable answer by combining sp
 """
 
     def invoke(self, question: str, thread_id: str):
-        config = {"configurable": {"thread_id": thread_id}}
+        config_dict = {"configurable": {"thread_id": thread_id}}
         print(f"\n{'='*50}\n--- Running Agent for thread '{thread_id}' ---\nQUESTION: {question}\n{'='*50}")
 
         messages = [
@@ -218,23 +225,60 @@ Your primary mission is to provide a complete, actionable answer by combining sp
             HumanMessage(content=question)
         ]
 
+        import time
         final_answer = ""
-        try:
-            events = self.graph.stream({"messages": messages}, config=config, stream_mode="values")
-            for event in events:
-                last_message = event["messages"][-1]
-                if isinstance(last_message, AIMessage) and last_message.tool_calls:
-                    print("\n🤔 Agent is thinking... Tool called:")
-                    last_message.pretty_print()
-                elif isinstance(last_message, ToolMessage):
-                    print(f"\n🛠️ Tool '{last_message.name}' result:")
-                    last_message.pretty_print()
-                elif isinstance(last_message, AIMessage) and not last_message.tool_calls:
-                    final_answer = last_message.content
-                    print("\n✅ Final Answer:")
-                    last_message.pretty_print()
-        except Exception as e:
-            print(f"\n❌ ERROR: {e}")
-            traceback.print_exc()
-            final_answer = f"An error occurred: {e}"
+        max_attempts = 3
+        
+        for attempt in range(max_attempts):
+            try:
+                # Pass original inputs on attempt 0. On subsequent retry attempts, pass None
+                # to instruct LangGraph to resume the existing checkpointed thread.
+                inputs = {"messages": messages} if attempt == 0 else None
+                events = self.graph.stream(inputs, config=config_dict, stream_mode="values")
+                
+                for event in events:
+                    last_message = event["messages"][-1]
+                    if isinstance(last_message, AIMessage) and last_message.tool_calls:
+                        print("\n[Thinking] Agent is thinking... Tool called:")
+                        try:
+                            last_message.pretty_print()
+                        except Exception:
+                            pass
+                    elif isinstance(last_message, ToolMessage):
+                        print(f"\n[Tool] Tool '{last_message.name}' result:")
+                        try:
+                            last_message.pretty_print()
+                        except Exception:
+                            pass
+                    elif isinstance(last_message, AIMessage) and not last_message.tool_calls:
+                        content = last_message.content
+                        if isinstance(content, list):
+                            final_answer = "".join(
+                                part.get("text", "") if isinstance(part, dict) else str(part)
+                                for part in content
+                            )
+                        elif isinstance(content, dict):
+                            final_answer = content.get("text", str(content))
+                        else:
+                            final_answer = str(content)
+                        print("\n[Success] Final Answer:")
+                        try:
+                            last_message.pretty_print()
+                        except Exception:
+                            pass
+                # Successful run, break out of attempt loop
+                break
+            except Exception as e:
+                err_str = str(e)
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    if attempt < max_attempts - 1:
+                        print(f"\n[Rate Limit] Hit Gemini API rate limit. Waiting 12 seconds before retrying (Attempt {attempt+1}/{max_attempts})...")
+                        time.sleep(12)
+                        continue
+                
+                print(f"\n[Error] ERROR: {e}")
+                traceback.print_exc()
+                final_answer = f"An error occurred: {e}"
+                break
+                
         return final_answer

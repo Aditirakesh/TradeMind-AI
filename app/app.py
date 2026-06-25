@@ -1,17 +1,33 @@
+"""
+TradeMind AI — Streamlit Chat Application
+Author: Aditi
+A beautiful chatbot UI for querying Indian trade policies, HS codes, and FTP schemes.
+"""
+
 import streamlit as st
 import uuid
-import asyncio  # New: Import asyncio is required
-from intelligent_trade_agent import IntelligentTradeAgent
+import asyncio
+import sys
+import os
+
+# Add project root to path so we can import config and agents
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import config  # noqa: E402 — loads API key into env
+from agents.intelligent_trade_agent import IntelligentTradeAgent  # noqa: E402
+
+# -- Set page config (MUST be the first Streamlit command)
+st.set_page_config(page_title="TradeMind AI", layout="wide", page_icon="🧠")
+
+st.title("🧠 TradeMind AI")
+st.caption("Ask anything about Import/Export Policies, HS Codes, or Foreign Trade Policy (FTP).")
 
 # --- Event Loop Management ---
-# New: This is the crucial fix for running asyncio-based libraries like
-# Google's GenAI SDK within Streamlit's threaded environment.
-# This must be done BEFORE any library that needs an event loop is initialized.
+# Required for running asyncio-based libraries like Google's GenAI SDK
+# within Streamlit's threaded environment.
 try:
-    # Try to get the running event loop in the current thread
     loop = asyncio.get_running_loop()
 except RuntimeError:
-    # If no loop is running, create a new one and set it for the current thread
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -22,13 +38,9 @@ def load_agent():
     print("--- Streamlit: Loading IntelligentTradeAgent via @st.cache_resource ---")
     return IntelligentTradeAgent()
 
-# Now it is safe to load the agent
-agent = load_agent()
-
-# -- Set page config
-st.set_page_config(page_title="Trade Chatbot", layout="wide")
-st.title("🧠 LeAssistant")
-st.caption("Ask anything about Import/Export Policies, HS Codes, or Foreign Trade Policy (FTP).")
+# Load the agent with a beautiful spinner so the user knows it's initializing
+with st.spinner("Initializing AI Models & Database (this takes ~15 seconds on first run)..."):
+    agent = load_agent()
 
 # -- Initialize session state
 if "chat_history" not in st.session_state:
@@ -42,7 +54,7 @@ if "thread_id" not in st.session_state:
     print(f"--- New chat session started with Thread ID: {st.session_state.thread_id} ---")
 
 
-# -- Basic Chat Bubble Styles
+# -- Chat Bubble Styles
 def render_message(role, content):
     """Renders chat messages with custom styling."""
     if role == "user":
@@ -78,18 +90,18 @@ def render_message(role, content):
                 font-size: 15px;
                 border: 1px solid #E0E0E0;
             '>
-                <b>Assistant:</b><br>{content}
+                <b>TradeMind AI:</b><br>{content}
             </div>
             """,
             unsafe_allow_html=True
         )
+
 
 # -- Display chat messages
 for role, message in st.session_state.chat_history:
     render_message(role, message)
 
 # -- User input form
-# Using a form helps prevent reruns every time the user types a character
 with st.form("chat_form", clear_on_submit=True):
     user_input = st.text_input(
         "💬 Your message",
@@ -100,24 +112,18 @@ with st.form("chat_form", clear_on_submit=True):
 
 # -- On submit logic
 if submitted and user_input.strip():
-    # Append user message to history and render it immediately for better UX
     st.session_state.chat_history.append(("user", user_input))
     render_message("user", user_input)
 
-    # Show a spinner while the agent is working
     with st.spinner("🤖 Agent is thinking..."):
         try:
-            # Call the agent's invoke method with the user input and session's thread_id
             response = agent.invoke(user_input, thread_id=st.session_state.thread_id)
         except Exception as e:
             response = f"❌ An unexpected error occurred: {e}"
-            st.error(response) # Display error prominently
+            st.error(response)
 
-    # Append agent's response to history and render it
     st.session_state.chat_history.append(("agent", response))
     render_message("agent", response)
 
-    # Reset the input key to clear the text input field reliably
     st.session_state.input_key = str(uuid.uuid4())
-    # We need to rerun to ensure the form is cleared after processing
     st.rerun()
